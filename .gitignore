@@ -1,0 +1,17 @@
+# Python & Node caches
+__pycache__/
+*.pyc
+*.pyo
+node_modules/
+
+# Temporary intermediates & downloaded audio
+audio_cache/
+temp_chunks/
+raw_parts/
+raw_transcripts/
+subtitles_raw/
+/tmp/
+
+# OS & editor junk
+.DS_Store
+Thumbs.db
