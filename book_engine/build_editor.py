@@ -472,6 +472,8 @@ body.edition-sepia {{
   text-align-last: right;
   text-indent: 1.4em;
 }}
+.sharh-zone.tight-fit {{ font-size: 10.95pt; line-height: 1.67; }}
+.sharh-zone.tight-fit .sharh-p {{ margin-bottom: 0.5pt; }}
 .sharh-p.cont {{ text-indent: 0; }}
 .sharh-p strong, .sharh-zone strong {{ font-weight: 700; color: var(--strong-ink); }}
 .ayah {{
@@ -1751,24 +1753,42 @@ const BASE_VERBATIM_DATA = {verbatim_json};
       const tmp = document.createElement('div');
       tmp.innerHTML = htmlStr;
       const atoms = [];
+      function pushTextWords(str, wrap) {{
+        const parts = str.split(/(\\s+)/);
+        for (const p of parts) {{
+          if (!p) continue;
+          if (/^\\s+$/.test(p)) {{
+            if (atoms.length) atoms[atoms.length - 1].trail = ' ';
+          }} else {{
+            atoms.push({{ text: p, wrap: wrap, trail: '' }});
+          }}
+        }}
+      }}
       function walk(node, wrap) {{
         if (node.nodeType === Node.TEXT_NODE) {{
-          const parts = node.textContent.split(/(\\s+)/);
-          for (const p of parts) {{
-            if (!p) continue;
-            if (/^\\s+$/.test(p)) {{
-              if (atoms.length) atoms[atoms.length - 1].trail = ' ';
-            }} else {{
-              atoms.push({{ text: p, wrap: wrap, trail: '' }});
-            }}
-          }}
+          pushTextWords(node.textContent, wrap);
         }} else if (node.nodeType === Node.ELEMENT_NODE) {{
           const tag = node.tagName.toLowerCase();
           const cls = node.getAttribute('class') || '';
-          if (cls.split(/\\s+/).includes('ayah-ref')) {{
+          const clsList = cls.split(/\\s+/).filter(Boolean);
+          if (clsList.includes('ayah-ref')) {{
             const refTxt = node.textContent.trim().replace(/\\s+/g, '\\u00A0');
-            if (refTxt) atoms.push({{ text: refTxt, wrap: [...wrap, {{ tag, cls }}], trail: '' }});
+            if (refTxt) {{
+              if (atoms.length) {{
+                atoms[atoms.length - 1].suffixRef = refTxt;
+                atoms[atoms.length - 1].trail = '';
+              }} else {{
+                atoms.push({{ text: refTxt, wrap: [...wrap, {{ tag, cls }}], trail: '' }});
+              }}
+            }}
             return;
+          }}
+          if (clsList.includes('ayah')) {{
+            const wordsCount = node.textContent.trim().split(/\\s+/).filter(Boolean).length;
+            if (wordsCount <= 42 && wrap.length === 0) {{
+              atoms.push({{ text: node.textContent.trim(), wrap: [{{ tag, cls }}], trail: '' }});
+              return;
+            }}
           }}
           for (const ch of node.childNodes) walk(ch, [...wrap, {{ tag, cls }}]);
         }}
@@ -1796,7 +1816,12 @@ const BASE_VERBATIM_DATA = {verbatim_json};
           out += '<' + w.tag + (w.cls ? ' class="' + w.cls + '"' : '') + '>';
           openStack.push(w);
         }}
-        out += esc(a.text) + (i < atoms.length - 1 ? a.trail : '');
+        out += esc(a.text);
+        if (a.suffixRef) {{
+          closeAll(0);
+          out += '\\u00A0<span class="ayah-ref">' + esc(a.suffixRef) + '</span>';
+        }}
+        if (i < atoms.length - 1) out += a.trail;
       }}
       closeAll(0);
       return out;
@@ -2105,6 +2130,12 @@ const BASE_VERBATIM_DATA = {verbatim_json};
     }}
 
     const ayahRefLookup = new Map();
+    if (data.ayah_refs && typeof data.ayah_refs === 'object') {{
+      for (const [k, v] of Object.entries(data.ayah_refs)) {{
+        const cleanK = k.replace(/\\s+/g, ' ').trim();
+        if (cleanK && v) ayahRefLookup.set(cleanK, String(v).trim());
+      }}
+    }}
     for (const u of data.units) {{
       for (const pHtml of (u.sharh_paras_html || [])) {{
         const tmpA = document.createElement('div');
@@ -2122,6 +2153,7 @@ const BASE_VERBATIM_DATA = {verbatim_json};
     function recordAyahsOnPage(htmlChunk, pNum) {{
       const tmp = document.createElement('div');
       tmp.innerHTML = htmlChunk;
+      tmp.querySelectorAll('.fn-ref').forEach(el => el.remove());
       for (const sp of tmp.querySelectorAll('.ayah')) {{
         const cleanAyah = sp.textContent.replace(/[﴿﴾]/g, '').replace(/\\s+/g, ' ').trim();
         const wordCount = cleanAyah ? cleanAyah.split(' ').length : 0;
@@ -2187,6 +2219,12 @@ const BASE_VERBATIM_DATA = {verbatim_json};
       renderPageFootnotes(curPageObj);
       curPageObj.unitCountOnPage++;
 
+      // Prevent tall Matn-only units from clipping off footnotes or bottom edge
+      if (!u.is_preface && curPageObj.bodyFrame.scrollHeight > curPageObj.bodyFrame.clientHeight - 4) {{
+        curPageObj.matnZone.style.fontSize = '11.4pt';
+        curPageObj.matnZone.style.lineHeight = '1.64';
+      }}
+
       // Images placed right before Sharh (or top of Preface Sharh)
       for (const im of (u.images || [])) {{
         if (im.placement === 'before_sharh' || (u.is_preface && im.placement === 'before_matn')) {{
@@ -2200,6 +2238,7 @@ const BASE_VERBATIM_DATA = {verbatim_json};
         let isCont = false;
         let firstPartOnPage = true;
         const placedElsForPara = [];
+        const isLastPara = (pi === paras.length - 1);
 
         while (atoms.length > 0) {{
           const pEl = document.createElement('p');
@@ -2214,6 +2253,16 @@ const BASE_VERBATIM_DATA = {verbatim_json};
             placedElsForPara.push(pEl);
             atoms = [];
           }} else {{
+            if (isLastPara && atoms.length <= 28 && !curPageObj.sharhZone.classList.contains('tight-fit')) {{
+              curPageObj.sharhZone.classList.add('tight-fit');
+              if (fitsPage(curPageObj)) {{
+                recordAyahsOnPage(pEl.innerHTML, curPageObj.pNum);
+                placedElsForPara.push(pEl);
+                atoms = [];
+                continue;
+              }}
+              curPageObj.sharhZone.classList.remove('tight-fit');
+            }}
             let lo = 1, hi = atoms.length - 1, best = 0;
             while (lo <= hi) {{
               const mid = (lo + hi) >> 1;
@@ -2233,6 +2282,17 @@ const BASE_VERBATIM_DATA = {verbatim_json};
             }}
             const headAtoms = atoms.slice(0, best);
             const tailAtoms = atoms.slice(best);
+            if (isLastPara && tailAtoms.length <= 26 && !curPageObj.sharhZone.classList.contains('tight-fit')) {{
+              pEl.innerHTML = joinAtoms(atoms);
+              curPageObj.sharhZone.classList.add('tight-fit');
+              if (fitsPage(curPageObj)) {{
+                recordAyahsOnPage(pEl.innerHTML, curPageObj.pNum);
+                placedElsForPara.push(pEl);
+                atoms = [];
+                continue;
+              }}
+              curPageObj.sharhZone.classList.remove('tight-fit');
+            }}
             pEl.innerHTML = joinAtoms(headAtoms);
             recordAyahsOnPage(pEl.innerHTML, curPageObj.pNum);
             placedElsForPara.push(pEl);
@@ -2293,7 +2353,7 @@ const BASE_VERBATIM_DATA = {verbatim_json};
         const pgs = Array.from(pgSet).sort((a,b) => a-b);
         const pgLinks = pgs.map(p => '<a href="#pg-' + p + '">' + toE(p) + '</a>').join(' ، ');
         const refStr = ayahRefLookup.get(ayahTxt);
-        const refHtml = refStr ? ' <span class="ayah-ref">' + esc(refStr.replace(/\\s+/g, '\\u00A0')) + '</span>' : '';
+        const refHtml = refStr ? '\\u00A0<span class="ayah-ref">' + esc(refStr.replace(/\\s+/g, '\\u00A0')) + '</span>' : '';
         const row = document.createElement('div');
         row.className = 'ayah-idx-row';
         row.innerHTML = '<span class="ayah-idx-text">﴿' + esc(ayahTxt) + '﴾' + refHtml + '</span>' +
@@ -2358,11 +2418,21 @@ const BASE_VERBATIM_DATA = {verbatim_json};
         if (colOverflows(colRight) && colRight.children.length > 1) {{ colRight.removeChild(el); break; }}
         fIdx++;
       }}
-      while (fIdx < allTocEntries.length) {{
-        const el = makeTocEl(allTocEntries[fIdx]);
-        colLeft.appendChild(el);
-        if (colOverflows(colLeft) && colLeft.children.length > 1) {{ colLeft.removeChild(el); break; }}
-        fIdx++;
+      if (fIdx >= allTocEntries.length && (fIdx - startFIdx) >= 4) {{
+        const rem = allTocEntries.slice(startFIdx);
+        const half = Math.ceil(rem.length / 2);
+        colRight.innerHTML = '';
+        colLeft.innerHTML = '';
+        for (let i = 0; i < rem.length; i++) {{
+          (i < half ? colRight : colLeft).appendChild(makeTocEl(rem[i]));
+        }}
+      }} else {{
+        while (fIdx < allTocEntries.length) {{
+          const el = makeTocEl(allTocEntries[fIdx]);
+          colLeft.appendChild(el);
+          if (colOverflows(colLeft) && colLeft.children.length > 1) {{ colLeft.removeChild(el); break; }}
+          fIdx++;
+        }}
       }}
       if (fIdx === startFIdx) break;
     }}
